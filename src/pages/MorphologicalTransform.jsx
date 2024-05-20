@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import { Dialog } from "@headlessui/react";
 import { Link } from "react-router-dom";
 
@@ -14,7 +14,15 @@ function MorphologicalTransformations() {
   const [isOpen, setIsOpen] = useState(false);
   const [selectedImage, setSelectedImage] = useState("");
   const [transformedImage, setTransformedImage] = useState("");
+  const [originalLaplaceImage, setOriginalLaplaceImage] = useState("");
+  const [transformedLaplaceImage, setTransformedLaplaceImage] = useState("");
+  const [dividerPosition, setDividerPosition] = useState(50);
   const [activeTransformation, setActiveTransformation] = useState("erosion");
+  const imageContainerRef = useRef(null);
+  const laplaceContainerRef = useRef(null);
+  const fileInputRef = useRef(null);
+
+  const laplaceKernel = [-1, -1, -1, -1, 8, -1, -1, -1, -1];
 
   const structuringElements = {
     erosion: [0, 1, 0, 1, 1, 1, 0, 1, 0],
@@ -55,7 +63,7 @@ function MorphologicalTransformations() {
     return output;
   };
 
-  const applyMorphologicalTransformation = (type) => {
+  const applyMorphologicalTransformation = (type, image = selectedImage) => {
     const isBasic = type === "erosion" || type === "dilation";
     const element =
       structuringElements[
@@ -65,7 +73,7 @@ function MorphologicalTransformations() {
     const canvas = document.createElement("canvas");
     const ctx = canvas.getContext("2d");
     const img = new Image();
-    img.src = selectedImage;
+    img.src = image;
     img.onload = () => {
       canvas.width = img.width;
       canvas.height = img.height;
@@ -100,13 +108,12 @@ function MorphologicalTransformations() {
       );
       ctx.putImageData(transformedImageData, 0, 0);
       setTransformedImage(canvas.toDataURL());
+      applyLaplaceFilter(image, true);
+      applyLaplaceFilter(canvas.toDataURL(), false);
     };
   };
 
-  const openModal = (image) => {
-    setSelectedImage(image);
-    setIsOpen(true);
-
+  const applyLaplaceFilter = (image, isOriginal) => {
     const canvas = document.createElement("canvas");
     const ctx = canvas.getContext("2d");
     const img = new Image();
@@ -115,30 +122,126 @@ function MorphologicalTransformations() {
       canvas.width = img.width;
       canvas.height = img.height;
       ctx.drawImage(img, 0, 0);
+
       const imageData = ctx.getImageData(0, 0, img.width, img.height);
       const data = imageData.data;
 
-      const element = structuringElements["erosion"];
-      const resultData = morphologicalTransform(
+      const laplaceData = applyKernel(
         data,
         img.width,
         img.height,
-        element,
-        "erosion"
+        laplaceKernel
       );
 
-      const transformedImageData = new ImageData(
-        new Uint8ClampedArray(resultData),
+      const laplaceImageData = new ImageData(
+        new Uint8ClampedArray(laplaceData),
         img.width,
         img.height
       );
-      ctx.putImageData(transformedImageData, 0, 0);
-      setTransformedImage(canvas.toDataURL());
+
+      ctx.putImageData(laplaceImageData, 0, 0);
+      const laplaceUrl = canvas.toDataURL();
+      if (isOriginal) {
+        setOriginalLaplaceImage(laplaceUrl);
+      } else {
+        setTransformedLaplaceImage(laplaceUrl);
+      }
     };
+  };
+
+  const applyKernel = (data, width, height, kernel) => {
+    const output = new Float32Array(data.length);
+    const kSize = Math.sqrt(kernel.length);
+    const kHalf = Math.floor(kSize / 2);
+
+    for (let y = 0; y < height; y++) {
+      for (let x = 0; x < width; x++) {
+        let sumR = 0,
+          sumG = 0,
+          sumB = 0;
+        for (let ky = -kHalf; ky <= kHalf; ky++) {
+          for (let kx = -kHalf; kx <= kHalf; kx++) {
+            const px = x + kx;
+            const py = y + ky;
+            if (px >= 0 && px < width && py >= 0 && py < height) {
+              const offset = (py * width + px) * 4;
+              const weight = kernel[(ky + kHalf) * kSize + (kx + kHalf)];
+              sumR += data[offset] * weight;
+              sumG += data[offset + 1] * weight;
+              sumB += data[offset + 2] * weight;
+            }
+          }
+        }
+        const idx = (y * width + x) * 4;
+        output[idx] = sumR;
+        output[idx + 1] = sumG;
+        output[idx + 2] = sumB;
+        output[idx + 3] = data[idx + 3];
+      }
+    }
+    return output;
+  };
+
+  const openModal = (image) => {
+    setSelectedImage(image);
+    setIsOpen(true);
+    setActiveTransformation("erosion");
+    applyMorphologicalTransformation("erosion", image);
   };
 
   const closeModal = () => {
     setIsOpen(false);
+  };
+
+  const handleMouseMove = (e) => {
+    if (imageContainerRef.current && laplaceContainerRef.current) {
+      const containerWidth = imageContainerRef.current.offsetWidth;
+      const mouseX =
+        e.clientX - imageContainerRef.current.getBoundingClientRect().left;
+      const newPosition =
+        Math.max(0, Math.min(mouseX / containerWidth, 1)) * 100;
+      setDividerPosition(newPosition);
+    }
+  };
+
+  useEffect(() => {
+    if (selectedImage) {
+      applyLaplaceFilter(selectedImage, true);
+    }
+  }, [selectedImage]);
+
+  useEffect(() => {
+    const handleMouseUp = () => {
+      document.removeEventListener("mousemove", handleMouseMove);
+      document.removeEventListener("mouseup", handleMouseUp);
+    };
+
+    const handleMouseDown = (e) => {
+      document.addEventListener("mousemove", handleMouseMove);
+      document.addEventListener("mouseup", handleMouseUp);
+    };
+
+    document.addEventListener("mousedown", handleMouseDown);
+
+    return () => {
+      document.removeEventListener("mousedown", handleMouseDown);
+      document.removeEventListener("mousemove", handleMouseMove);
+      document.removeEventListener("mouseup", handleMouseUp);
+    };
+  }, []);
+
+  const handleImageUpload = (event) => {
+    const file = event.target.files[0];
+    if (file) {
+      const reader = new FileReader();
+      reader.onload = (e) => {
+        const newImageUrl = e.target.result;
+        const newImagesArray = [...images, newImageUrl];
+        setImages(newImagesArray);
+        openModal(newImageUrl);
+      };
+      reader.readAsDataURL(file);
+    }
   };
 
   return (
@@ -177,6 +280,30 @@ function MorphologicalTransformations() {
             onClick={() => openModal(image)}
           />
         ))}
+        <div className="flex items-center justify-center w-48 h-48 bg-gray-200 rounded-lg shadow-lg cursor-pointer hover:bg-gray-300">
+          <input
+            type="file"
+            accept="image/*"
+            style={{ display: "none" }}
+            onChange={handleImageUpload}
+            ref={fileInputRef}
+          />
+          <svg
+            onClick={() => fileInputRef.current.click()}
+            xmlns="http://www.w3.org/2000/svg"
+            className="h-10 w-10"
+            fill="none"
+            viewBox="0 0 24 24"
+            stroke="currentColor"
+          >
+            <path
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              strokeWidth={2}
+              d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4-4m0 0l-4 4m4-4v12"
+            />
+          </svg>
+        </div>
       </div>
 
       {isOpen && (
@@ -186,47 +313,118 @@ function MorphologicalTransformations() {
           className="fixed inset-0 bg-gray-100 bg-opacity-90 backdrop-blur-sm flex items-center justify-center p-4 text-xl"
         >
           <Dialog.Panel className="bg-white p-6 lg:p-10 rounded-2xl shadow-2xl max-w-6xl mx-auto w-full space-y-6">
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-10">
-              <div>
-                <p className="text-gray-500 mb-3">原图</p>
-                <img
-                  src={selectedImage}
-                  className="w-full object-cover select-none rounded-lg shadow aspect-square"
-                />
-              </div>
-              <div>
-                <p className="text-gray-500 mb-3">变换图像</p>
-                <img
-                  src={transformedImage}
-                  className="w-full object-cover select-none rounded-lg shadow aspect-square"
-                />
-              </div>
-            </div>
-            <div>
-              <p className="text-gray-500 mb-3">操作</p>
-              <div className="grid grid-cols-4 justify-center space-x-8">
-                {[
-                  { en: "erosion", cn: "腐蚀" },
-                  { en: "dilation", cn: "膨胀" },
-                  { en: "opening", cn: "开运算" },
-                  { en: "closing", cn: "闭运算" },
-                ].map(({ en, cn }) => (
-                  <button
-                    key={en}
-                    className={`px-6 py-2 rounded-xl font-medium tracking-wide shadow-md transition-colors duration-200 ease-in-out
-                ${
-                  activeTransformation === en
-                    ? "bg-blue-500 hover:bg-blue-600 text-white"
-                    : "bg-gray-300 hover:bg-gray-400 text-gray-800"
-                }`}
-                    onClick={() => {
-                      setActiveTransformation(en);
-                      applyMorphologicalTransformation(en);
-                    }}
+            <div className="flex flex-col gap-6">
+              <div className="flex justify-between items-center mb-4">
+                <h2 className="text-2xl font-semibold text-gray-800">
+                  图像对比
+                </h2>
+                <button
+                  onClick={closeModal}
+                  className="text-gray-500 hover:text-gray-700 focus:outline-none"
+                >
+                  <svg
+                    xmlns="http://www.w3.org/2000/svg"
+                    className="h-6 w-6"
+                    fill="none"
+                    viewBox="0 0 24 24"
+                    stroke="currentColor"
                   >
-                    {cn}
-                  </button>
-                ))}
+                    <path
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      strokeWidth="2"
+                      d="M6 18L18 6M6 6l12 12"
+                    />
+                  </svg>
+                </button>
+              </div>
+
+              <div className="grid grid-cols-2 gap-8">
+                <div>
+                  <p className="text-gray-600 mb-2">原图 vs 变换图像</p>
+                  <div
+                    ref={imageContainerRef}
+                    className="group relative aspect-square"
+                  >
+                    <img
+                      src={selectedImage}
+                      className="absolute top-0 left-0 w-full h-full object-cover select-none transition duration-500 group-hover:clip-path-none"
+                      style={{
+                        clipPath: `inset(0 ${100 - dividerPosition}% 0 0)`,
+                      }}
+                    />
+                    <img
+                      src={transformedImage}
+                      className="absolute top-0 left-0 w-full h-full object-cover select-none transition duration-500 group-hover:clip-path-none"
+                      style={{ clipPath: `inset(0 0 0 ${dividerPosition}%)` }}
+                    />
+                    <div
+                      className="divider absolute top-0 left-0 w-0.5 h-full bg-gray-400 hover:bg-gray-500 cursor-col-resize transition"
+                      style={{ left: `${dividerPosition}%` }}
+                    ></div>
+                  </div>
+                  <p className="text-gray-500 text-sm mt-2">
+                    拖动分割线来对比原图和变换图像。
+                  </p>
+                </div>
+
+                <div>
+                  <p className="text-gray-600 mb-2">
+                    原图拉普拉斯边缘 vs 当前图像拉普拉斯边缘
+                  </p>
+                  <div
+                    ref={laplaceContainerRef}
+                    className="group relative aspect-square"
+                  >
+                    <img
+                      src={originalLaplaceImage}
+                      className="absolute top-0 left-0 w-full h-full object-cover select-none transition duration-500 group-hover:clip-path-none"
+                      style={{
+                        clipPath: `inset(0 ${100 - dividerPosition}% 0 0)`,
+                      }}
+                    />
+                    <img
+                      src={transformedLaplaceImage}
+                      className="absolute top-0 left-0 w-full h-full object-cover select-none transition duration-500 group-hover:clip-path-none"
+                      style={{ clipPath: `inset(0 0 0 ${dividerPosition}%)` }}
+                    />
+                    <div
+                      className="divider absolute top-0 left-0 w-0.5 h-full bg-gray-400 hover:bg-gray-500 cursor-col-resize transition"
+                      style={{ left: `${dividerPosition}%` }}
+                    ></div>
+                  </div>
+                  <p className="text-gray-500 text-sm mt-2">
+                    拖动分割线来对比原图和当前图像的拉普拉斯边缘。
+                  </p>
+                </div>
+              </div>
+
+              <div>
+                <p className="text-gray-600 mb-3">操作</p>
+                <div className="grid grid-cols-4 justify-center space-x-8">
+                  {[
+                    { en: "erosion", cn: "腐蚀" },
+                    { en: "dilation", cn: "膨胀" },
+                    { en: "opening", cn: "开操作" },
+                    { en: "closing", cn: "闭操作" },
+                  ].map(({ en, cn }) => (
+                    <button
+                      key={en}
+                      className={`px-6 py-2 rounded-xl font-medium tracking-wide shadow-md transition-colors duration-200 ease-in-out
+                    ${
+                      activeTransformation === en
+                        ? "bg-blue-500 hover:bg-blue-600 text-white"
+                        : "bg-gray-300 hover:bg-gray-400 text-gray-800"
+                    }`}
+                      onClick={() => {
+                        setActiveTransformation(en);
+                        applyMorphologicalTransformation(en);
+                      }}
+                    >
+                      {cn}
+                    </button>
+                  ))}
+                </div>
               </div>
             </div>
           </Dialog.Panel>
